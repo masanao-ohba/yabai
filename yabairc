@@ -11,12 +11,13 @@ yabai -m config window_opacity               on
 yabai -m config window_opacity_duration      0.0
 yabai -m config active_window_opacity        1.0
 yabai -m config normal_window_opacity        0.85
-yabai -m config window_border                off
-yabai -m config window_border_width          02
-yabai -m config active_window_border_color   0xff775759
-yabai -m config normal_window_border_color   0xff555555
-yabai -m config insert_feedback_color        0xffd75f5f
+yabai -m config window_border                on
+yabai -m config window_border_width          5
+yabai -m config active_window_border_color   0xFF88C0D0
+yabai -m config normal_window_border_color   0xFF88C0D0
+yabai -m config insert_feedback_color        0xFF88C0D0
 yabai -m config split_ratio                  0.50
+yabai -m config split_type                   vertical
 yabai -m config auto_balance                 off
 yabai -m config mouse_modifier               fn
 yabai -m config mouse_action1                move
@@ -32,16 +33,31 @@ yabai -m config right_padding                06
 yabai -m config window_gap                   05
 
 # Rules
+# Float mode apps (manage=off disables tiling)
 yabai -m rule --add app="^System Settings$" manage=off
+yabai -m rule --add app="^Chrome$" manage=off
 yabai -m rule --add app="^Docker$" manage=off
 yabai -m rule --add app="^Arc$" title="^Space.*$" manage=off layer=below
 yabai -m rule --add app="^Arc$" title="^$" manage=off layer=below
 yabai -m rule --add app="^zoom\.us$" manage=off
 yabai -m rule --add app="^Docker Desktop$" manage=off
 yabai -m rule --add app="^Calculator$" manage=off
-yabai -m rule --add app="^Finder$" title="^Connect to Server$" manage=off
-yabai -m rule --add app="^Finder$" title="^Connecting to Server$" manage=off
-yabai -m rule --add app="^Finder$" title="^.* Info$" manage=off
-yabai -m rule --add app="^Finder$" title="^Copy$" manage=off
+yabai -m rule --add app="^Finder$" manage=off sticky=on layer=above
+yabai -m rule --add app="^FortiClient$" sticky=on layer=above manage=off
+yabai -m rule --add app="^Ice$" sticky=on layer=above manage=off
+yabai -m rule --add app="^Activity Monitor$" sticky=on layer=above manage=off
+yabai -m rule --add app="^TickTick$" sticky=on layer=above manage=off
+
+# Tiled apps (manage=on ensures full-screen tiling on initial display)
+# VSCode and Slack will tile by default, but explicit rules ensure consistency
+yabai -m rule --add app="^Visual Studio Code$" manage=on
+yabai -m rule --add app="^Code$" manage=on
+yabai -m rule --add app="^Slack$" manage=on
+
+# Signals for auto-layout
+yabai -m signal --add event=window_created action="~/.config/yabai/scripts/apply-layout.sh"
+yabai -m signal --add event=window_destroyed action="~/.config/yabai/scripts/apply-layout.sh"
+yabai -m signal --add event=window_minimized action="~/.config/yabai/scripts/apply-layout.sh"
+yabai -m signal --add event=window_deminimized action="~/.config/yabai/scripts/apply-layout.sh"
 
 echo "yabai configuration loaded.."
