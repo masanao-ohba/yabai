@@ -31,6 +31,8 @@ fi
 
 # --- Marker file for tracking our own floated window ---
 MARKER_FILE="/tmp/yabai-single-float.id"
+# --- Window count cache to skip unnecessary re-layouts ---
+COUNT_FILE="/tmp/yabai-layout-count"
 
 # --- Query windows ---
 SPACE_INDEX=$(yabai -m query --spaces --space | jq -r '.index')
@@ -39,6 +41,24 @@ SPACE_INDEX=$(yabai -m query --spaces --space | jq -r '.index')
 TILED_JSON=$(yabai -m query --windows --space "$SPACE_INDEX" \
   | jq '[.[] | select(."is-floating" == false and ."is-minimized" == false and ."is-hidden" == false and ."is-visible" == true)] | sort_by(.frame.x)')
 TILED_COUNT=$(echo "$TILED_JSON" | jq 'length')
+
+# Skip if window count hasn't changed (prevents flicker on tab switches etc.)
+# Only skip when not called manually (manual call via skhd won't have YABAI_SIGNAL env)
+CURRENT_KEY="${SPACE_INDEX}:${TILED_COUNT}"
+if [ -f "$MARKER_FILE" ]; then
+  FLOATED_ID=$(cat "$MARKER_FILE" 2>/dev/null)
+  FLOATED_EXISTS=$(yabai -m query --windows --space "$SPACE_INDEX" \
+    | jq --arg id "$FLOATED_ID" '[.[] | select(.id == ($id | tonumber) and ."is-floating" == true)] | length' 2>/dev/null)
+  if [ "$FLOATED_EXISTS" = "1" ]; then
+    CURRENT_KEY="${SPACE_INDEX}:$(( TILED_COUNT + 1 ))"
+  fi
+fi
+PREV_KEY=$(cat "$COUNT_FILE" 2>/dev/null)
+if [ "$CURRENT_KEY" = "$PREV_KEY" ] && [ -z "$YABAI_MANUAL" ]; then
+  rm -f "$LOCK_FILE"
+  exit 0
+fi
+echo "$CURRENT_KEY" > "$COUNT_FILE"
 
 # Check if we have a previously floated single window
 OUR_FLOAT_ID=""
