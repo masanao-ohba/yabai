@@ -35,24 +35,15 @@ yabai -m config window_gap                   05
 # Rules
 # Float mode apps (manage=off disables tiling)
 yabai -m rule --add app="^System Settings$" manage=off
-yabai -m rule --add app="^Chrome$" manage=off
 yabai -m rule --add app="^Docker$" manage=off
-yabai -m rule --add app="^Arc$" title="^Space.*$" manage=off layer=below
-yabai -m rule --add app="^Arc$" title="^$" manage=off layer=below
-yabai -m rule --add app="^zoom\.us$" manage=off
 yabai -m rule --add app="^Docker Desktop$" manage=off
 yabai -m rule --add app="^Calculator$" manage=off
-yabai -m rule --add app="^Finder$" manage=off sticky=on layer=above
-yabai -m rule --add app="^FortiClient$" sticky=on layer=above manage=off
-yabai -m rule --add app="^Ice$" sticky=on layer=above manage=off
-yabai -m rule --add app="^Activity Monitor$" sticky=on layer=above manage=off
-yabai -m rule --add app="^TickTick$" sticky=on layer=above manage=off
-
-# Tiled apps (manage=on ensures full-screen tiling on initial display)
-# VSCode and Slack will tile by default, but explicit rules ensure consistency
-yabai -m rule --add app="^Visual Studio Code$" manage=on
-yabai -m rule --add app="^Code$" manage=on
-yabai -m rule --add app="^Slack$" manage=on
+yabai -m rule --add app="^zoom\.us$" manage=off
+yabai -m rule --add app="^Finder$" manage=off sticky=on
+yabai -m rule --add app="^FortiClient$" manage=off sticky=on
+yabai -m rule --add app="^Ice$" manage=off sticky=on
+yabai -m rule --add app="^Activity Monitor$" manage=off sticky=on
+yabai -m rule --add app="^TickTick$" manage=off sticky=on
 
 # Signals for auto-layout
 yabai -m signal --add event=window_created action="~/.config/yabai/scripts/apply-layout.sh"

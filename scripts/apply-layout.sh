@@ -21,6 +21,14 @@ touch "$LOCK_FILE"
 
 sleep 0.3
 
+# --- Only apply layout on the widest display (primary) ---
+DISPLAY_INDEX=$(yabai -m query --spaces --space | jq -r '.display')
+PRIMARY_DISPLAY=$(yabai -m query --displays | jq -r 'sort_by(-.frame.w) | .[0].index')
+if [ "$DISPLAY_INDEX" != "$PRIMARY_DISPLAY" ]; then
+  rm -f "$LOCK_FILE"
+  exit 0
+fi
+
 # --- Marker file for tracking our own floated window ---
 MARKER_FILE="/tmp/yabai-single-float.id"
 
