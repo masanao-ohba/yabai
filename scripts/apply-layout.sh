@@ -9,15 +9,20 @@
 #   3 windows -> BSP 2:3:2 (root ratio 2/7, sub-root ratio 3/5)
 #   4+ windows -> BSP auto-balance
 
-# --- Debounce ---
-LOCK_FILE="/tmp/yabai-apply-layout.lock"
-if [ -f "$LOCK_FILE" ]; then
-  lock_age=$(( $(date +%s) - $(stat -f %m "$LOCK_FILE") ))
-  if [ "$lock_age" -lt 1 ]; then
+# --- Atomic lock (mkdir is atomic, prevents concurrent execution) ---
+LOCK_DIR="/tmp/yabai-apply-layout.lock.d"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  # Check for stale lock (older than 10 seconds)
+  lock_age=$(( $(date +%s) - $(stat -f %m "$LOCK_DIR") ))
+  if [ "$lock_age" -gt 10 ]; then
+    # Stale lock, remove
+    rmdir "$LOCK_DIR" 2>/dev/null
+    mkdir "$LOCK_DIR" 2>/dev/null || exit 0
+  else
     exit 0
   fi
 fi
-touch "$LOCK_FILE"
+trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
 
 sleep 0.3
 
@@ -25,7 +30,6 @@ sleep 0.3
 DISPLAY_INDEX=$(yabai -m query --spaces --space | jq -r '.display')
 PRIMARY_DISPLAY=$(yabai -m query --displays | jq -r 'sort_by(-.frame.w) | .[0].index')
 if [ "$DISPLAY_INDEX" != "$PRIMARY_DISPLAY" ]; then
-  rm -f "$LOCK_FILE"
   exit 0
 fi
 
@@ -55,7 +59,6 @@ if [ -f "$MARKER_FILE" ]; then
 fi
 PREV_KEY=$(cat "$COUNT_FILE" 2>/dev/null)
 if [ "$CURRENT_KEY" = "$PREV_KEY" ] && [ -z "$YABAI_MANUAL" ]; then
-  rm -f "$LOCK_FILE"
   exit 0
 fi
 echo "$CURRENT_KEY" > "$COUNT_FILE"
@@ -80,7 +83,6 @@ fi
 
 # Nothing to do
 if [ "$TOTAL_COUNT" -eq 0 ]; then
-  rm -f "$LOCK_FILE"
   exit 0
 fi
 
@@ -161,4 +163,3 @@ case "$TOTAL_COUNT" in
     ;;
 esac
 
-rm -f "$LOCK_FILE"
