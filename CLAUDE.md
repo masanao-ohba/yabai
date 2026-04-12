@@ -1,40 +1,51 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## Layout Specification (invariant)
 
-## Repository Overview
+Layout applied per managed window count on the primary (widest) display.
 
-This is a yabai window manager configuration repository. Yabai is a tiling window manager for macOS that provides advanced window management capabilities through shell script configuration.
+| windows | layout | method |
+|---|---|---|
+| 1 | center 3/7 width | space padding = display_w * 2/7 |
+| 2 | 1:1 | tile, ratio 0.5 |
+| 3 | 2:3:2 | tile, ratios 0.2857 / 0.6000 |
+| 4+ | balanced | tile, space --balance |
 
-## Architecture
+- Auto-transition on window count change
+- No flicker, no high CPU
+- Same layout via manual trigger (skhd)
 
-The repository contains a single configuration file:
+## Design Constraints (invariant)
 
-- `yabairc` - Main yabai configuration script that sets up window management behavior, visual styling, and application-specific rules
+| ID | Constraint |
+|---|---|
+| D1 | Idempotent: repeated execution on same state emits zero commands |
+| D2 | yabai window/space commands do not fire signals; loops originate from app AX reactions |
+| D3 | Hot path (layout matches): no yabai commands → no AX writeback → no loop |
+| D4 | Cold path (mismatch): converges to fixpoint in at most 1 round-trip |
+| D5 | `auto_balance on` forbidden — breaks CASE 3 asymmetric ratios |
 
-## Configuration Structure
+## Repository Structure
 
-The yabairc file is organized into three main sections:
+- `yabairc` — global settings, space settings, app rules, signal registration
+- `scripts/apply-layout.sh` — layout handler (signal + manual trigger)
+- `scripts/single-center.sh` — manual float-center toggle for single window
+- `scripts/center-window.sh` — swap focused ↔ center in 3-window layout
 
-1. **Global Settings** (lines 4-24): Core window management behavior including focus, opacity, borders, and mouse interactions
-2. **Space Settings** (lines 27-32): Layout type (BSP - Binary Space Partitioning) and padding/gap configurations  
-3. **Application Rules** (lines 35-46): Per-application window management overrides for apps that should float or have special behavior
+## Key Facts
 
-## Key Configuration Details
+- BSP layout, `split_ratio 0.50`, `auto_balance off`
+- Opacity: 85% normal / 100% active
+- Border: removed in v7 (use JankyBorders)
+- Mouse modifier: `fn`
+- Primary display: `yabai -m query --displays | jq 'sort_by(-.frame.w) | .[0]'`
 
-- Uses BSP (Binary Space Partitioning) layout for automatic window tiling
-- Window opacity: 85% for normal windows, 100% for active window
-- Border styling with Nordic blue color scheme (0xFF88C0D0)
-- Mouse modifier key: `fn` for window manipulation
-- Specific rules disable tiling for system apps, floating windows, and utility apps
+## Operations
 
-## Common Operations
+- **Reload**: `yabai --restart-service`
+- **Test**: `./yabairc`
+- **Syntax check**: `sh -n yabairc`
 
-- **Reload configuration**: `yabai --restart-service` or restart yabai service
-- **Test configuration**: Execute `./yabairc` directly to apply settings
-- **Validate syntax**: Check shell script syntax with `sh -n yabairc`
+## App Rules
 
-## Application Rules Pattern
-
-Rules follow the pattern: `yabai -m rule --add app="^AppName$" [options]`
-Common options include `manage=off` (disable tiling), `layer=above/below`, and `sticky=on`.
+`yabai -m rule --add app="^Name$" [manage=off] [layer=above] [sticky=on]`

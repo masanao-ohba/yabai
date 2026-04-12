@@ -1,165 +1,128 @@
 #!/usr/bin/env bash
-
-# apply-layout.sh
-# Automatically adjusts window layout based on the number of managed windows.
+# apply-layout.sh — idempotent layout handler
 #
-# Layout rules:
-#   1 window  -> float, center at 3/7 width (--grid 1:7:2:0:3:1)
-#   2 windows -> BSP 1:1
-#   3 windows -> BSP 2:3:2 (root ratio 2/7, sub-root ratio 3/5)
-#   4+ windows -> BSP auto-balance
+# CASE 1: center 3/7 via padding  |  CASE 2: 1:1 tile
+# CASE 3: 2:3:2 tile              |  CASE 4+: balanced
+#
+# Hot path: no commands. Cold path: 1 round-trip to fixpoint.
 
-# --- Atomic lock (mkdir is atomic, prevents concurrent execution) ---
-LOCK_DIR="/tmp/yabai-apply-layout.lock.d"
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-  # Check for stale lock (older than 10 seconds)
-  lock_age=$(( $(date +%s) - $(stat -f %m "$LOCK_DIR") ))
-  if [ "$lock_age" -gt 10 ]; then
-    # Stale lock, remove
-    rmdir "$LOCK_DIR" 2>/dev/null
-    mkdir "$LOCK_DIR" 2>/dev/null || exit 0
-  else
-    exit 0
-  fi
-fi
-trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
+set -euo pipefail
 
-sleep 0.3
+LOCKDIR="/tmp/yabai-layout.lock"
+mkdir "$LOCKDIR" 2>/dev/null || exit 0
+trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT
 
-# --- Only apply layout on the widest display (primary) ---
-DISPLAY_INDEX=$(yabai -m query --spaces --space | jq -r '.display')
-PRIMARY_DISPLAY=$(yabai -m query --displays | jq -r 'sort_by(-.frame.w) | .[0].index')
-if [ "$DISPLAY_INDEX" != "$PRIMARY_DISPLAY" ]; then
-  exit 0
-fi
+PAD_DEFAULT=6
+TOL=5
 
-# --- Marker file for tracking our own floated window ---
-MARKER_FILE="/tmp/yabai-single-float.id"
-# --- Window count cache to skip unnecessary re-layouts ---
-COUNT_FILE="/tmp/yabai-layout-count"
+abs_diff() { local d=$(( ${1%.*} - ${2%.*} )); echo ${d#-}; }
 
-# --- Query windows ---
-SPACE_INDEX=$(yabai -m query --spaces --space | jq -r '.index')
+# Focused space
+space_json=$(yabai -m query --spaces --space 2>/dev/null) || exit 0
+space=$(echo "$space_json" | jq -r '.index // empty')
+disp=$(echo "$space_json" | jq -r '.display // empty')
+[ -n "$space" ] || exit 0
 
-# Tiled windows only (excludes manage=off floating windows like Zoom, Finder)
-TILED_JSON=$(yabai -m query --windows --space "$SPACE_INDEX" \
-  | jq '[.[] | select(."is-floating" == false and ."is-minimized" == false and ."is-hidden" == false and ."is-visible" == true)] | sort_by(.frame.x)')
-TILED_COUNT=$(echo "$TILED_JSON" | jq 'length')
+# Primary display gate (widest)
+displays_json=$(yabai -m query --displays 2>/dev/null)
+primary=$(echo "$displays_json" | jq -r \
+  'if type=="array" and length>0 then (sort_by(-.frame.w) | .[0].index) else empty end' 2>/dev/null)
+[ -z "$primary" ] || [ "$disp" = "$primary" ] || exit 0
 
-# Skip if window count hasn't changed (prevents flicker on tab switches etc.)
-# Only skip when not called manually (manual call via skhd won't have YABAI_SIGNAL env)
-CURRENT_KEY="${SPACE_INDEX}:${TILED_COUNT}"
-if [ -f "$MARKER_FILE" ]; then
-  FLOATED_ID=$(cat "$MARKER_FILE" 2>/dev/null)
-  FLOATED_EXISTS=$(yabai -m query --windows --space "$SPACE_INDEX" \
-    | jq --arg id "$FLOATED_ID" '[.[] | select(.id == ($id | tonumber) and ."is-floating" == true)] | length' 2>/dev/null)
-  if [ "$FLOATED_EXISTS" = "1" ]; then
-    CURRENT_KEY="${SPACE_INDEX}:$(( TILED_COUNT + 1 ))"
-  fi
-fi
-PREV_KEY=$(cat "$COUNT_FILE" 2>/dev/null)
-if [ "$CURRENT_KEY" = "$PREV_KEY" ] && [ -z "$YABAI_MANUAL" ]; then
-  exit 0
-fi
-echo "$CURRENT_KEY" > "$COUNT_FILE"
+# Tiled visible windows sorted by x
+wins=$(yabai -m query --windows --space "$space" | jq '[.[] | select(
+  ."is-floating"  == false and
+  ."is-minimized" == false and
+  ."is-hidden"    == false and
+  ."is-visible"   == true
+)] | sort_by(.frame.x)')
+n=$(echo "$wins" | jq 'length')
 
-# Check if we have a previously floated single window
-OUR_FLOAT_ID=""
-if [ -f "$MARKER_FILE" ]; then
-  OUR_FLOAT_ID=$(cat "$MARKER_FILE")
-  EXISTS=$(yabai -m query --windows --space "$SPACE_INDEX" \
-    | jq --arg id "$OUR_FLOAT_ID" '[.[] | select(.id == ($id | tonumber) and ."is-floating" == true)] | length')
-  if [ "$EXISTS" -ne 1 ]; then
-    OUR_FLOAT_ID=""
-    rm -f "$MARKER_FILE"
-  fi
+pad_left=$(yabai -m config --space "$space" left_padding)
+
+# Center padding for CASE 1
+disp_w=$(echo "$displays_json" | jq --argjson d "${disp:-1}" \
+  '[.[] | select(.index == $d)][0].frame.w // 0' 2>/dev/null)
+disp_w=${disp_w%.*}
+pad_center=$(( (disp_w * 2 + 7) / 7 ))
+
+# Restore default padding when leaving CASE 1
+if [ "$n" -ge 2 ] && [ "$pad_left" -ne "$PAD_DEFAULT" ]; then
+  yabai -m config --space "$space" left_padding "$PAD_DEFAULT"
+  yabai -m config --space "$space" right_padding "$PAD_DEFAULT"
 fi
 
-# Total count = tiled + our floated window (if any)
-TOTAL_COUNT="$TILED_COUNT"
-if [ -n "$OUR_FLOAT_ID" ]; then
-  TOTAL_COUNT=$(( TILED_COUNT + 1 ))
-fi
+case "$n" in
+  0) exit 0 ;;
 
-# Nothing to do
-if [ "$TOTAL_COUNT" -eq 0 ]; then
-  exit 0
-fi
-
-# --- Helper: unfloat our previously floated window ---
-unfloat_our_window() {
-  if [ -n "$OUR_FLOAT_ID" ]; then
-    yabai -m window "$OUR_FLOAT_ID" --toggle float
-    rm -f "$MARKER_FILE"
-    OUR_FLOAT_ID=""
-    sleep 0.1
-  fi
-}
-
-# --- Apply layout ---
-case "$TOTAL_COUNT" in
   1)
-    # Single window: float and center at 3/7 width
-    if [ -n "$OUR_FLOAT_ID" ]; then
-      # Already floated by us, just reposition
-      yabai -m window "$OUR_FLOAT_ID" --grid 1:7:2:0:3:1
-    else
-      # Float the tiled window
-      WIN_ID=$(echo "$TILED_JSON" | jq -r '.[0].id')
-      yabai -m window "$WIN_ID" --toggle float
-      yabai -m window "$WIN_ID" --grid 1:7:2:0:3:1
-      echo "$WIN_ID" > "$MARKER_FILE"
-    fi
+    [ "$pad_left" = "$pad_center" ] && exit 0
+    yabai -m config --space "$space" left_padding "$pad_center"
+    yabai -m config --space "$space" right_padding "$pad_center"
     ;;
 
   2)
-    # Two windows: unfloat if needed, BSP 1:1
-    unfloat_our_window
+    w1=$(echo "$wins" | jq -r '.[0].id')
+    w2=$(echo "$wins" | jq -r '.[1].id')
+    width1=$(echo "$wins" | jq -r '.[0].frame.w')
+    width2=$(echo "$wins" | jq -r '.[1].frame.w')
 
-    # Re-query tiled windows
-    sleep 0.1
-    TILED=$(yabai -m query --windows --space "$SPACE_INDEX" \
-      | jq '[.[] | select(."is-floating" == false and ."is-minimized" == false and ."is-hidden" == false and ."is-visible" == true)] | sort_by(.frame.x)')
-    TILED_COUNT=$(echo "$TILED" | jq 'length')
+    [ "$(abs_diff "$width1" "$width2")" -lt "$TOL" ] && exit 0
 
-    if [ "$TILED_COUNT" -ge 2 ]; then
-      FIRST_ID=$(echo "$TILED" | jq -r '.[0].id')
-      SECOND_ID=$(echo "$TILED" | jq -r '.[1].id')
-      yabai -m window "$SECOND_ID" --warp "$FIRST_ID"
-      sleep 0.1
-      yabai -m window "$FIRST_ID" --ratio abs:0.5
+    split=$(echo "$wins" | jq -r '.[0]."split-type"')
+    child1=$(echo "$wins" | jq -r '.[0]."split-child"')
+    child2=$(echo "$wins" | jq -r '.[1]."split-child"')
+
+    if [ "$split" = "vertical" ] && [ "$child1" = "first_child" ] && [ "$child2" = "second_child" ]; then
+      yabai -m window "$w1" --ratio abs:0.5
+    else
+      yabai -m window "$w2" --warp "$w1"
+      yabai -m window "$w1" --ratio abs:0.5
     fi
     ;;
 
   3)
-    # Three windows: unfloat if needed, BSP 2:3:2
-    unfloat_our_window
+    w1=$(echo "$wins" | jq -r '.[0].id')
+    w2=$(echo "$wins" | jq -r '.[1].id')
+    w3=$(echo "$wins" | jq -r '.[2].id')
+    width1=$(echo "$wins" | jq -r '.[0].frame.w')
+    width2=$(echo "$wins" | jq -r '.[1].frame.w')
+    width3=$(echo "$wins" | jq -r '.[2].frame.w')
+    total=$(echo "$wins" | jq '[.[].frame.w] | add')
+    total=${total%.*}; w1i=${width1%.*}; w2i=${width2%.*}; w3i=${width3%.*}
 
-    sleep 0.1
-    TILED=$(yabai -m query --windows --space "$SPACE_INDEX" \
-      | jq '[.[] | select(."is-floating" == false and ."is-minimized" == false and ."is-hidden" == false and ."is-visible" == true)] | sort_by(.frame.x)')
-    TILED_COUNT=$(echo "$TILED" | jq 'length')
+    # Hot path: check 2:3:2 ratio
+    if [ "$total" -gt 0 ]; then
+      s1=$(( (w1i * 7 + total / 2) / total ))
+      s2=$(( (w2i * 7 + total / 2) / total ))
+      s3=$(( (w3i * 7 + total / 2) / total ))
+      [ "$s1" = "2" ] && [ "$s2" = "3" ] && [ "$s3" = "2" ] && exit 0
+    fi
 
-    if [ "$TILED_COUNT" -ge 3 ]; then
-      WIN1=$(echo "$TILED" | jq -r '.[0].id')
-      WIN2=$(echo "$TILED" | jq -r '.[1].id')
-      WIN3=$(echo "$TILED" | jq -r '.[2].id')
+    # Cold path: rebuild tree
+    split1=$(echo "$wins" | jq -r '.[0]."split-type"')
+    child1=$(echo "$wins" | jq -r '.[0]."split-child"')
+    split2=$(echo "$wins" | jq -r '.[1]."split-type"')
+    child2=$(echo "$wins" | jq -r '.[1]."split-child"')
+    child3=$(echo "$wins" | jq -r '.[2]."split-child"')
 
-      # Rebuild BSP tree: WIN1 alone on left, WIN2+WIN3 grouped on right
-      # Warp WIN3 next to WIN2 to create subtree [WIN2, WIN3]
-      yabai -m window "$WIN3" --warp "$WIN2"
-      sleep 0.1
-
-      # Set ratios: root = 2/7 (WIN1 is left), sub-root = 3/5 (WIN2 is center)
-      yabai -m window "$WIN1" --ratio abs:0.2857
-      yabai -m window "$WIN2" --ratio abs:0.6000
+    if [ "$split1" = "vertical"   ] && [ "$child1" = "first_child"  ] \
+    && [ "$split2" = "horizontal" ] && [ "$child2" = "first_child"  ] \
+    &&                                  [ "$child3" = "second_child" ]; then
+      yabai -m window "$w1" --ratio abs:0.2857
+      yabai -m window "$w2" --ratio abs:0.6000
+    else
+      yabai -m window "$w3" --warp "$w2"
+      sleep 0.05
+      yabai -m window "$w1" --ratio abs:0.2857
+      yabai -m window "$w2" --ratio abs:0.6000
     fi
     ;;
 
   *)
-    # 4+ windows: unfloat and auto-balance
-    unfloat_our_window
+    max_w=$(echo "$wins" | jq '[.[].frame.w] | max')
+    min_w=$(echo "$wins" | jq '[.[].frame.w] | min')
+    [ "$(abs_diff "$max_w" "$min_w")" -lt "$TOL" ] && exit 0
     yabai -m space --balance
     ;;
 esac
-
